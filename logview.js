@@ -111,7 +111,7 @@ function lineVisible(app, text) {
 // ---------------------------------------------------------------------------
 // Ring buffer of recent lines so filter changes can redraw retroactively.
 // ---------------------------------------------------------------------------
-const RING_MAX = 3000;
+const RING_MAX = 10000;
 const ring = []; // { app, text }
 
 function record(app, text) {
@@ -130,6 +130,7 @@ let cols = process.stdout.columns || 100;
 let overlayOpen = false;
 let overlayCursor = 0;
 let pendingWhileOverlay = [];
+let scrollOffset = 0; // 0 = following the live tail; >0 = N filtered lines scrolled up
 
 function regionTop() { return HEADER_ROWS + 1; }
 function regionBottom() { return rows; }
@@ -137,6 +138,7 @@ function regionBottom() { return rows; }
 function enterUi() {
   process.stdout.write('\x1b[?1049h'); // alt screen buffer
   process.stdout.write('\x1b[2J');      // clear
+  process.stdout.write('\x1b[?1000h\x1b[?1006h'); // enable SGR mouse (wheel scroll)
   applyScrollRegion();
   drawHeader();
   parkCursor();
@@ -147,6 +149,7 @@ function enterUi() {
 }
 
 function leaveUi() {
+  process.stdout.write('\x1b[?1000l\x1b[?1006l'); // disable mouse tracking
   process.stdout.write(CSI + 'r');       // reset scroll region
   process.stdout.write('\x1b[?25h');     // show cursor
   process.stdout.write('\x1b[?1049l');   // leave alt screen
@@ -160,6 +163,19 @@ function parkCursor() {
   process.stdout.write(`${CSI}${regionBottom()};1H`);
 }
 
+// --- scrollback helpers -----------------------------------------------------
+function visibleEntries() { return ring.filter(e => lineVisible(e.app, e.text)); }
+function regionHeight() { return regionBottom() - regionTop() + 1; }
+function maxOffset() { return Math.max(0, visibleEntries().length - regionHeight()); }
+function scrollBy(delta) {
+  const prev = scrollOffset;
+  scrollOffset = Math.max(0, Math.min(scrollOffset + delta, maxOffset()));
+  if (scrollOffset !== prev) { redrawRegion(); drawHeader(); }
+}
+function scrollToTop() { scrollOffset = maxOffset(); redrawRegion(); drawHeader(); }
+function followTail() { if (scrollOffset !== 0) { scrollOffset = 0; redrawRegion(); drawHeader(); } }
+function resetScroll() { scrollOffset = 0; }
+
 function badgeBar() {
   const parts = appOrder.map(name => {
     const a = apps.get(name);
@@ -171,14 +187,26 @@ function badgeBar() {
   return parts.join(' ');
 }
 
+function statusLine() {
+  const hint = bold('logview') + dim('  f=filter  1-9=toggle  a=all  /=search  ↑↓/wheel=scroll  q=quit');
+  const state = scrollOffset > 0
+    ? fg(214, `  ⏸ scrolled +${scrollOffset} · End=live`)
+    : fg(41, '  ● live');
+  const search = (searchMode || searchTerm) ? fg(220, `  /${searchTerm}${searchMode ? '▌' : ''}`) : '';
+  return hint + state + search;
+}
+
+// Rewrite only the top status row (cheap; used while frozen during streaming).
+function drawStatusRow() {
+  process.stdout.write('\x1b[?25l' + `${CSI}1;1H${CSI}2K` + statusLine());
+}
+
 function drawHeader() {
   process.stdout.write('\x1b[?25l'); // hide cursor while drawing
-  const hint = bold('logview') + dim('  f=filter  1-9=toggle  a=all  n=none  /=search  q=quit');
-  const search = searchTerm ? '  ' + fg(220, '/' + searchTerm) : '';
-  process.stdout.write(`${CSI}1;1H${CSI}2K` + clip(hint + search));
+  process.stdout.write(`${CSI}1;1H${CSI}2K` + statusLine());
   process.stdout.write(`${CSI}2;1H${CSI}2K` + badgeBar());
   parkCursor();
-  process.stdout.write('\x1b[?25h');
+  process.stdout.write(scrollOffset > 0 ? '\x1b[?25l' : '\x1b[?25h');
 }
 
 function clip(s) {
@@ -192,6 +220,12 @@ function clip(s) {
 function writeLog(app, text) {
   if (!interactive) { process.stdout.write(text + '\n'); return; }
   if (overlayOpen) { pendingWhileOverlay.push({ app, text }); return; }
+  if (scrollOffset > 0) {
+    // User is viewing history — keep their view anchored, don't scroll it.
+    scrollOffset = Math.min(scrollOffset + 1, maxOffset());
+    drawStatusRow();
+    return;
+  }
   const prefixColored = app && apps.has(app)
     ? recolorPrefix(app, text)
     : text;
@@ -209,14 +243,19 @@ function recolorPrefix(app, text) {
 }
 
 function redrawRegion() {
-  // Clear the scroll region and reprint the visible tail of the ring buffer.
+  // Clear the scroll region and reprint a window into the ring buffer.
   process.stdout.write('\x1b[?25l');
   for (let r = regionTop(); r <= regionBottom(); r++) {
     process.stdout.write(`${CSI}${r};1H${CSI}2K`);
   }
   const visible = ring.filter(e => lineVisible(e.app, e.text));
   const height = regionBottom() - regionTop() + 1;
-  const slice = visible.slice(-height);
+  if (scrollOffset > Math.max(0, visible.length - height)) {
+    scrollOffset = Math.max(0, visible.length - height); // clamp after resize/filter
+  }
+  const end = visible.length - scrollOffset;      // exclusive
+  const start = Math.max(0, end - height);
+  const slice = visible.slice(start, end);
   let row = regionBottom() - slice.length + 1;
   if (row < regionTop()) row = regionTop();
   for (const e of slice) {
@@ -226,7 +265,7 @@ function redrawRegion() {
     row++;
   }
   parkCursor();
-  process.stdout.write('\x1b[?25h');
+  process.stdout.write(scrollOffset > 0 ? '\x1b[?25l' : '\x1b[?25h');
 }
 
 // ---------------------------------------------------------------------------
@@ -264,6 +303,7 @@ function closeOverlay() {
   // Flush anything buffered while the overlay was open into the ring.
   for (const e of pendingWhileOverlay) record(e.app, e.text);
   pendingWhileOverlay = [];
+  resetScroll();
   drawHeader();
   redrawRegion();
 }
@@ -273,8 +313,22 @@ function closeOverlay() {
 // ---------------------------------------------------------------------------
 let searchMode = false;
 
+function handleMouse(s) {
+  const m = /\x1b\[<(\d+);\d+;\d+[Mm]/.exec(s);
+  if (!m) return;
+  const btn = parseInt(m[1], 10);
+  if (btn === 64) scrollBy(3);       // wheel up  → into history
+  else if (btn === 65) scrollBy(-3); // wheel down → toward live tail
+}
+
 function onKey(buf) {
   const s = buf.toString('utf8');
+
+  // Mouse wheel (SGR) — scroll history whenever a normal view is showing.
+  if (s.startsWith('\x1b[<')) {
+    if (!overlayOpen && !searchMode) handleMouse(s);
+    return;
+  }
 
   if (searchMode) return handleSearchKey(s);
   if (overlayOpen) return handleOverlayKey(s);
@@ -288,21 +342,28 @@ function onKey(buf) {
       openOverlay();
       return;
     case 'a':
-      setAll(true); drawHeader(); redrawRegion();
+      resetScroll(); setAll(true); drawHeader(); redrawRegion();
       return;
     case 'n':
-      setAll(false); drawHeader(); redrawRegion();
+      resetScroll(); setAll(false); drawHeader(); redrawRegion();
       return;
     case '/':
       searchMode = true; searchTerm = ''; drawHeader();
       return;
+    // --- scrollback controls ---
+    case '\x1b[A': scrollBy(1); return;                    // ↑
+    case '\x1b[B': scrollBy(-1); return;                   // ↓
+    case '\x1b[5~': scrollBy(regionHeight() - 1); return;  // PageUp
+    case '\x1b[6~': scrollBy(-(regionHeight() - 1)); return; // PageDown
+    case '\x1b[H': case '\x1b[1~': case 'g': scrollToTop(); return; // Home / g
+    case '\x1b[F': case '\x1b[4~': case 'G': followTail(); return;  // End / G
   }
   if (/^[1-9]$/.test(s)) {
     const idx = parseInt(s, 10) - 1;
     if (idx < appOrder.length) {
       const a = apps.get(appOrder[idx]);
       a.visible = !a.visible;
-      drawHeader(); redrawRegion();
+      resetScroll(); drawHeader(); redrawRegion();
     }
   }
 }
@@ -323,11 +384,11 @@ function handleOverlayKey(s) {
 function handleSearchKey(s) {
   if (s === '\r' || s === '\n' || s === '\x1b') {
     if (s === '\x1b') searchTerm = '';
-    searchMode = false; drawHeader(); redrawRegion(); return;
+    searchMode = false; resetScroll(); drawHeader(); redrawRegion(); return;
   }
-  if (s === '\x7f' || s === '\b') { searchTerm = searchTerm.slice(0, -1); drawHeader(); return; }
+  if (s === '\x7f' || s === '\b') { searchTerm = searchTerm.slice(0, -1); resetScroll(); drawHeader(); redrawRegion(); return; }
   if (s === '\x03') { shutdown(0); return; }
-  if (s >= ' ') { searchTerm += s; drawHeader(); }
+  if (s >= ' ') { searchTerm += s; resetScroll(); drawHeader(); redrawRegion(); }
 }
 
 function setAll(v) { for (const a of apps.values()) a.visible = v; }
@@ -434,12 +495,16 @@ OPTIONS
   -h, --help        Show this help
 
 INTERACTIVE KEYS (when attached to a terminal)
-  f        open the app filter dropdown
-  1-9      toggle an app on/off by number
-  a        show all apps
-  n        hide all apps
-  /        search text (enter to apply, esc to clear)
-  q        quit
+  f          open the app filter dropdown
+  1-9        toggle an app on/off by number
+  a          show all apps
+  n          hide all apps
+  /          search text (enter to apply, esc to clear)
+  wheel/↑↓   scroll through history (pauses the live tail)
+  PgUp/PgDn  scroll a page at a time
+  Home / g   jump to the top of history
+  End / G    jump back to the live tail
+  q          quit
 `;
   process.stdout.write(t + '\n');
 }

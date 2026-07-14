@@ -62,17 +62,33 @@ logview --hide admin-console turbo dev            # start with some hidden
 
 ### Interactive keys
 
-| Key   | Action                                            |
-|-------|---------------------------------------------------|
-| `f`   | open the app filter **dropdown**                  |
-| `1`–`9` | toggle an app on/off by its number              |
-| `a`   | show all apps                                     |
-| `n`   | hide all apps                                     |
-| `/`   | search — type text, `Enter` to apply, `Esc` clears |
-| `q`   | quit (also stops the wrapped command)             |
+| Key        | Action                                            |
+|------------|---------------------------------------------------|
+| `f`        | open the app filter **dropdown**                  |
+| `1`–`9`    | toggle an app on/off by its number                |
+| `a`        | show all apps                                      |
+| `n`        | hide all apps                                      |
+| `/`        | search — type text, `Enter` to apply, `Esc` clears |
+| wheel / `↑` `↓` | **scroll through history** (pauses the live tail) |
+| `PgUp` / `PgDn` | scroll a page at a time                       |
+| `Home` / `g` | jump to the oldest buffered line                |
+| `End` / `G`  | jump back to the live tail                       |
+| `q`        | quit (also stops the wrapped command)             |
 
 In the dropdown: `↑`/`↓` move, `space` toggles the highlighted app, `a`/`n`
 all/none, `Enter` or `Esc` closes.
+
+### Scrolling back through old logs
+
+Scroll up with the mouse wheel (or `↑` / `PgUp`) to review earlier output — the
+live tail **pauses** while you read and the header shows `⏸ scrolled +N` so you
+know new lines are being buffered, not lost. Press `End` (or `G`) to snap back
+to the bottom and resume following. The last 10,000 filtered lines are kept in
+memory, and changing the filter re-applies to that whole history.
+
+> Because the wheel is used for scrolling, click-drag text selection needs
+> **Shift+drag** while logview is running (standard for terminal apps that
+> capture the mouse).
 
 ### Try it without turbo
 
