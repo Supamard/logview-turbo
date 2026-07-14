@@ -1,0 +1,29 @@
+{
+  "name": "logview",
+  "version": "1.0.0",
+  "description": "Per-app log filter for Turborepo. Pinned filter badge bar + interactive app dropdown in the terminal.",
+  "type": "commonjs",
+  "bin": {
+    "logview": "logview.js"
+  },
+  "scripts": {
+    "demo": "node logview.js node demo.js"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "files": [
+    "logview.js"
+  ],
+  "keywords": ["turborepo", "turbo", "logs", "filter", "monorepo", "cli"],
+  "author": "Supamard <kwan_st82@hotmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Supamard/logview-turbo.git"
+  },
+  "homepage": "https://github.com/Supamard/logview-turbo#readme",
+  "bugs": {
+    "url": "https://github.com/Supamard/logview-turbo/issues"
+  }
+}
