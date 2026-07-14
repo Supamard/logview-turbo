@@ -1,7 +1,10 @@
 {
-  "name": "logview",
+  "name": "@supamard/logview",
   "version": "1.0.0",
   "description": "Per-app log filter for Turborepo. Pinned filter badge bar + interactive app dropdown in the terminal.",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "commonjs",
   "bin": {
     "logview": "logview.js"
